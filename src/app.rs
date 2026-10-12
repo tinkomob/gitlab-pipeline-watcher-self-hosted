@@ -594,19 +594,20 @@ impl eframe::App for PipelineWatcher {
                                 });
                             }
                         }
-                        if self.loading_jobs.contains(&key) {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.spinner();
-                                },
-                            );
-                        }
                     });
                     ui.add_space(4.0);
                 }
             });
         });
+
+        if !self.loading_jobs.is_empty() {
+            egui::Area::new(egui::Id::new("jobs_loading_indicator"))
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -12.0))
+                .show(&ctx, |ui| {
+                    ui.spinner();
+                });
+        }
 
         self.update_tray();
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
