@@ -22,6 +22,18 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
 };
 
+#[cfg(windows)]
+use std::sync::atomic::AtomicIsize;
+
+#[cfg(windows)]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+#[cfg(windows)]
+static NOTIFICATION_OPEN_EVENT: AtomicIsize = AtomicIsize::new(0);
+
+#[cfg(windows)]
+const OPEN_EVENT_NAME: &str = "Local\\PipelineWatcherOpenEvent";
+
 const KEYRING_SERVICE: &str = "pipeline-watcher";
 const KEYRING_USER: &str = "gitlab-token";
 
@@ -175,6 +187,34 @@ impl PipelineWatcher {
             .build()
             .ok();
         let open_requested = Arc::new(AtomicBool::new(false));
+        #[cfg(windows)]
+        let hwnd = cc
+            .window_handle()
+            .ok()
+            .and_then(|handle| match handle.as_raw() {
+                RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as usize),
+                _ => None,
+            });
+        #[cfg(windows)]
+        if let Some(hwnd) = hwnd {
+            let requested = open_requested.clone();
+            let ctx = cc.egui_ctx.clone();
+            let event = NOTIFICATION_OPEN_EVENT.load(Ordering::SeqCst);
+            if event != 0 {
+                std::thread::spawn(move || {
+                    while unsafe {
+                        windows_sys::Win32::System::Threading::WaitForSingleObject(
+                            event as windows_sys::Win32::Foundation::HANDLE,
+                            windows_sys::Win32::System::Threading::INFINITE,
+                        ) == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+                    } {
+                        raise_window(hwnd);
+                        requested.store(true, Ordering::SeqCst);
+                        ctx.request_repaint();
+                    }
+                });
+            }
+        }
         let quit_requested = Arc::new(AtomicBool::new(false));
         let open_menu_id = open.id().clone();
         let quit_menu_id = quit.id().clone();
@@ -183,6 +223,10 @@ impl PipelineWatcher {
         let menu_ctx = cc.egui_ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if event.id == open_menu_id {
+                #[cfg(windows)]
+                if let Some(hwnd) = hwnd {
+                    raise_window(hwnd);
+                }
                 menu_open.store(true, Ordering::SeqCst);
                 menu_ctx.request_repaint();
             } else if event.id == quit_menu_id {
@@ -204,6 +248,10 @@ impl PipelineWatcher {
                     ..
                 }
             ) {
+                #[cfg(windows)]
+                if let Some(hwnd) = hwnd {
+                    raise_window(hwnd);
+                }
                 tray_open.store(true, Ordering::SeqCst);
                 tray_ctx.request_repaint();
             }
@@ -282,7 +330,7 @@ impl PipelineWatcher {
             ));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.restore_window_level_at =
-                Some(Instant::now() + std::time::Duration::from_millis(300));
+                Some(Instant::now() + std::time::Duration::from_millis(1_500));
         }
         if self
             .restore_window_level_at
@@ -710,15 +758,170 @@ fn set_auto_start(enabled: bool) -> Result<(), String> {
     }
 }
 
+#[cfg(windows)]
+pub fn prepare_windows_activation() -> bool {
+    register_open_protocol();
+
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "pipeline-watcher://open")
+        && signal_running_instance()
+    {
+        return true;
+    }
+
+    let name: Vec<u16> = OPEN_EVENT_NAME.encode_utf16().chain(Some(0)).collect();
+    let event = unsafe {
+        windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null(), 0, 0, name.as_ptr())
+    };
+    NOTIFICATION_OPEN_EVENT.store(event as isize, Ordering::SeqCst);
+    false
+}
+
+#[cfg(windows)]
+fn register_open_protocol() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let key = r"HKCU\Software\Classes\pipeline-watcher";
+    let command = format!("\"{}\" \"%1\"", exe.display());
+    let _ = Command::new("reg.exe")
+        .args([
+            "add",
+            key,
+            "/ve",
+            "/d",
+            "URL:Pipeline Watcher Protocol",
+            "/f",
+        ])
+        .output();
+    let _ = Command::new("reg.exe")
+        .args(["add", key, "/v", "URL Protocol", "/d", "", "/f"])
+        .output();
+    let _ = Command::new("reg.exe")
+        .args([
+            "add",
+            &format!("{key}\\shell\\open\\command"),
+            "/ve",
+            "/d",
+            &command,
+            "/f",
+        ])
+        .output();
+}
+
+#[cfg(windows)]
+fn signal_running_instance() -> bool {
+    let name: Vec<u16> = OPEN_EVENT_NAME.encode_utf16().chain(Some(0)).collect();
+    let event = unsafe {
+        windows_sys::Win32::System::Threading::OpenEventW(
+            windows_sys::Win32::System::Threading::EVENT_MODIFY_STATE,
+            0,
+            name.as_ptr(),
+        )
+    };
+    if event.is_null() {
+        return false;
+    }
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            AllowSetForegroundWindow, FindWindowW, GetWindowThreadProcessId,
+        };
+        let title: Vec<u16> = "Pipeline Watcher".encode_utf16().chain(Some(0)).collect();
+        let window = FindWindowW(std::ptr::null(), title.as_ptr());
+        let mut process_id = 0;
+        GetWindowThreadProcessId(window, &mut process_id);
+        if process_id != 0 {
+            AllowSetForegroundWindow(process_id);
+        }
+        windows_sys::Win32::System::Threading::SetEvent(event);
+        windows_sys::Win32::Foundation::CloseHandle(event);
+    }
+    true
+}
+
+#[cfg(windows)]
+fn raise_window(hwnd: usize) {
+    use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId, HWND_TOPMOST, SW_RESTORE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindowAsync,
+    };
+
+    let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+    unsafe {
+        ShowWindowAsync(hwnd, SW_RESTORE);
+        let current = GetCurrentThreadId();
+        let owner = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+        let foreground = GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut());
+        // Windows restricts foreground activation to the thread receiving user input.
+        let attached = foreground != 0
+            && foreground != current
+            && AttachThreadInput(current, foreground, 1) != 0;
+        let owner_attached =
+            owner != current && owner != foreground && AttachThreadInput(current, owner, 1) != 0;
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+        SetForegroundWindow(hwnd);
+        if owner_attached {
+            AttachThreadInput(current, owner, 0);
+        }
+        if attached {
+            AttachThreadInput(current, foreground, 0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn notify(title: &str, body: &str) {
+    use windows::{
+        Data::Xml::Dom::XmlDocument,
+        UI::Notifications::{ToastNotification, ToastNotificationManager},
+        runtime::HSTRING,
+    };
+
+    let escape = |value: &str| {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    };
+    let xml = XmlDocument::new().and_then(|xml| {
+        xml.LoadXml(HSTRING::from(format!(
+            "<toast activationType=\"protocol\" launch=\"pipeline-watcher://open\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+            escape(title),
+            escape(body)
+        )))?;
+        Ok(xml)
+    });
+    let Ok(xml) = xml else {
+        return;
+    };
+    let Ok(toast) = ToastNotification::CreateToastNotification(xml) else {
+        return;
+    };
+    if let Ok(notifier) = ToastNotificationManager::CreateToastNotifierWithId(HSTRING::from(
+        winrt_notification::Toast::POWERSHELL_APP_ID,
+    )) {
+        let _ = notifier.Show(&toast);
+    }
+}
+
 pub fn notify_started(project: &str, path: &str, branch: &str, id: i64) {
     let title = format!("{project}: pipeline #{id} started");
     let body = format!("{path} · branch {branch}");
     #[cfg(windows)]
     {
-        let _ = winrt_notification::Toast::new(winrt_notification::Toast::POWERSHELL_APP_ID)
-            .title(&title)
-            .text1(&body)
-            .show();
+        notify(&title, &body);
     }
     #[cfg(not(windows))]
     {
@@ -739,10 +942,7 @@ pub fn notify_finished(project: &str, path: &str, branch: &str, id: i64, status:
     let body = format!("{path} · branch {branch}");
     #[cfg(windows)]
     {
-        let _ = winrt_notification::Toast::new(winrt_notification::Toast::POWERSHELL_APP_ID)
-            .title(&title)
-            .text1(&body)
-            .show();
+        notify(&title, &body);
     }
     #[cfg(not(windows))]
     {

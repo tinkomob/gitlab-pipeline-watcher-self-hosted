@@ -4,6 +4,11 @@ mod app;
 mod gitlab;
 
 fn main() -> eframe::Result {
+    #[cfg(windows)]
+    if app::prepare_windows_activation() {
+        return Ok(());
+    }
+
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([920.0, 640.0])

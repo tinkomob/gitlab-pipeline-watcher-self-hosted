@@ -3051,11 +3051,14 @@ dependencies = [
  "futures-util",
  "keyring",
  "notify-rust",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tray-icon",
+ "windows 0.24.0",
+ "windows-sys 0.61.2",
  "winrt-notification",
 ]
 
