@@ -525,14 +525,7 @@ impl eframe::App for PipelineWatcher {
                         }
 
                         if is_active || self.expanded.contains(&key) {
-                            let loading = self.loading_jobs.contains(&key);
                             if let Some(jobs) = self.jobs.get(&key) {
-                                if loading {
-                                    ui.horizontal(|ui| {
-                                        ui.spinner();
-                                        ui.label("Refreshing stages and jobs…");
-                                    });
-                                }
                                 if let Some(error) = self.job_errors.get(&key) {
                                     ui.colored_label(egui::Color32::LIGHT_RED, error);
                                 }
@@ -590,12 +583,9 @@ impl eframe::App for PipelineWatcher {
                                         }
                                     }
                                 }
-                            } else if loading {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label("Loading stages and jobs…");
-                                });
-                            } else if let Some(error) = self.job_errors.get(&key).cloned() {
+                            } else if !self.loading_jobs.contains(&key)
+                                && let Some(error) = self.job_errors.get(&key).cloned()
+                            {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(egui::Color32::LIGHT_RED, error);
                                     if ui.small_button("Retry").clicked() {
@@ -603,6 +593,14 @@ impl eframe::App for PipelineWatcher {
                                     }
                                 });
                             }
+                        }
+                        if self.loading_jobs.contains(&key) {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.spinner();
+                                },
+                            );
                         }
                     });
                     ui.add_space(4.0);
