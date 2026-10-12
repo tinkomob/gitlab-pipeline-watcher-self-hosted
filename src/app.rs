@@ -18,7 +18,7 @@ use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 use tray_icon::{
-    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
+    Icon, MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent,
     menu::{Menu, MenuEvent, MenuItem},
 };
 
@@ -195,7 +195,13 @@ impl PipelineWatcher {
         TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
             if matches!(
                 event,
-                TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
             ) {
                 tray_open.store(true, Ordering::SeqCst);
                 tray_ctx.request_repaint();
