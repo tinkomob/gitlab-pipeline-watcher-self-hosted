@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use std::process::Command;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -26,6 +28,8 @@ pub struct Config {
     pub token: String,
     #[serde(default = "default_poll_seconds")]
     pub poll_seconds: u64,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 impl Default for Config {
@@ -34,6 +38,7 @@ impl Default for Config {
             base_url: String::new(),
             token: String::new(),
             poll_seconds: default_poll_seconds(),
+            auto_start: false,
         }
     }
 }
@@ -194,18 +199,8 @@ impl PipelineWatcher {
         self.config.base_url = crate::gitlab::without_local_host_label(
             self.config.base_url.trim().trim_end_matches('/'),
         );
-        if let Some(path) = &self.config_path {
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            match serde_json::to_vec_pretty(&self.config) {
-                Ok(bytes) => {
-                    if let Err(error) = fs::write(path, bytes) {
-                        self.error = format!("Не удалось сохранить настройки: {error}");
-                    }
-                }
-                Err(error) => self.error = format!("Не удалось сериализовать настройки: {error}"),
-            }
+        if let Err(error) = self.persist_config() {
+            self.error = error;
         }
         if self.config.token.is_empty() {
             self.error = "Введите токен GitLab с правом read_api".into();
@@ -223,6 +218,19 @@ impl PipelineWatcher {
                 self.error = format!("Не удалось сохранить токен в хранилище системы: {error}")
             }
         }
+    }
+
+    fn persist_config(&self) -> Result<(), String> {
+        let Some(path) = &self.config_path else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Не удалось создать папку настроек: {error}"))?;
+        }
+        let bytes = serde_json::to_vec_pretty(&self.config)
+            .map_err(|error| format!("Не удалось сериализовать настройки: {error}"))?;
+        fs::write(path, bytes).map_err(|error| format!("Не удалось сохранить настройки: {error}"))
     }
 
     fn handle_tray_events(&mut self, ctx: &egui::Context) {
@@ -373,6 +381,28 @@ impl eframe::App for PipelineWatcher {
                             ui.add(egui::Slider::new(&mut self.config.poll_seconds, 10..=300));
                             ui.end_row();
                         });
+                    #[cfg(windows)]
+                    {
+                        let previous = self.config.auto_start;
+                        if ui
+                            .checkbox(&mut self.config.auto_start, "Запускать при входе в Windows")
+                            .changed()
+                        {
+                            match set_auto_start(self.config.auto_start) {
+                                Ok(()) => {
+                                    if let Err(error) = self.persist_config() {
+                                        let _ = set_auto_start(previous);
+                                        self.config.auto_start = previous;
+                                        self.error = error;
+                                    }
+                                }
+                                Err(error) => {
+                                    self.config.auto_start = previous;
+                                    self.error = error;
+                                }
+                            }
+                        }
+                    }
                     if ui.button("Сохранить и подключиться").clicked() {
                         self.save_and_connect();
                     }
@@ -599,6 +629,45 @@ fn job_status_color(status: &str) -> Option<egui::Color32> {
         "success" => Some(egui::Color32::LIGHT_GREEN),
         "failed" => Some(egui::Color32::LIGHT_RED),
         _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn set_auto_start(enabled: bool) -> Result<(), String> {
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    const VALUE: &str = "PipelineWatcher";
+    if !enabled
+        && !Command::new("reg.exe")
+            .args(["query", KEY, "/v", VALUE])
+            .output()
+            .map_err(|error| format!("Не удалось проверить автозапуск: {error}"))?
+            .status
+            .success()
+    {
+        return Ok(());
+    }
+
+    let mut command = Command::new("reg.exe");
+    if enabled {
+        let path = std::env::current_exe()
+            .map_err(|error| format!("Не удалось определить путь приложения: {error}"))?;
+        command
+            .args(["add", KEY, "/v", VALUE, "/t", "REG_SZ", "/d"])
+            .arg(format!("\"{}\"", path.display()))
+            .arg("/f");
+    } else {
+        command.args(["delete", KEY, "/v", VALUE, "/f"]);
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("Не удалось изменить автозапуск: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Не удалось изменить автозапуск Windows (код {})",
+            output.status
+        ))
     }
 }
 
