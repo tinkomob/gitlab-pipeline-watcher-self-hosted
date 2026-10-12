@@ -111,7 +111,7 @@ impl PollResult {
     pub fn error(message: &str) -> Self {
         Self {
             pipelines: Vec::new(),
-            status: "Нет подключения".into(),
+            status: "Disconnected".into(),
             error: message.into(),
             updated_at: None,
         }
@@ -158,8 +158,8 @@ impl PipelineWatcher {
         let (result_tx, result_rx) = mpsc::channel();
         crate::gitlab::start(config_rx, command_rx, result_tx, cc.egui_ctx.clone());
 
-        let open = MenuItem::new("Открыть Pipeline Watcher", true, None);
-        let quit = MenuItem::new("Выход", true, None);
+        let open = MenuItem::new("Open Pipeline Watcher", true, None);
+        let quit = MenuItem::new("Exit", true, None);
         let menu = Menu::new();
         let _ = menu.append(&open);
         let _ = menu.append(&quit);
@@ -181,7 +181,7 @@ impl PipelineWatcher {
             loading_jobs: HashSet::new(),
             jobs: HashMap::new(),
             job_errors: HashMap::new(),
-            status: "Укажите адрес GitLab и токен".into(),
+            status: "Enter your GitLab URL and access token".into(),
             error: String::new(),
             last_updated: None,
             tab: Tab::Running,
@@ -203,7 +203,7 @@ impl PipelineWatcher {
             self.error = error;
         }
         if self.config.token.is_empty() {
-            self.error = "Введите токен GitLab с правом read_api".into();
+            self.error = "Enter a GitLab token with read_api access".into();
             return;
         }
         match Entry::new(KEYRING_SERVICE, KEYRING_USER)
@@ -212,10 +212,11 @@ impl PipelineWatcher {
             Ok(()) => {
                 self.error.clear();
                 let _ = self.config_tx.send(self.config.clone());
-                self.status = "Подключение…".into();
+                self.status = "Connecting…".into();
             }
             Err(error) => {
-                self.error = format!("Не удалось сохранить токен в хранилище системы: {error}")
+                self.error =
+                    format!("Could not save the token to the system credential store: {error}")
             }
         }
     }
@@ -226,11 +227,11 @@ impl PipelineWatcher {
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
-                .map_err(|error| format!("Не удалось создать папку настроек: {error}"))?;
+                .map_err(|error| format!("Could not create the settings directory: {error}"))?;
         }
         let bytes = serde_json::to_vec_pretty(&self.config)
-            .map_err(|error| format!("Не удалось сериализовать настройки: {error}"))?;
-        fs::write(path, bytes).map_err(|error| format!("Не удалось сохранить настройки: {error}"))
+            .map_err(|error| format!("Could not serialize settings: {error}"))?;
+        fs::write(path, bytes).map_err(|error| format!("Could not save settings: {error}"))
     }
 
     fn handle_tray_events(&mut self, ctx: &egui::Context) {
@@ -311,7 +312,7 @@ impl PipelineWatcher {
         {
             self.loading_jobs.remove(&key);
             self.job_errors
-                .insert(key, "Не удалось запустить загрузку этапов".into());
+                .insert(key, "Could not start loading pipeline stages".into());
         }
     }
 
@@ -325,7 +326,7 @@ impl PipelineWatcher {
             self.tray_count = Some(active);
             if let Some(tray) = &self.tray {
                 let _ = tray.set_icon(Some(tray_icon(active)));
-                let _ = tray.set_tooltip(Some(&format!("Pipeline Watcher: {active} выполняется")));
+                let _ = tray.set_tooltip(Some(&format!("Pipeline Watcher: {active} running")));
             }
         }
     }
@@ -347,7 +348,7 @@ impl eframe::App for PipelineWatcher {
                 ui.heading("Pipeline Watcher");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!(
-                        "{} активных",
+                        "{} running",
                         self.pipelines
                             .iter()
                             .filter(|p| Pipeline::is_active_status(&p.status))
@@ -357,27 +358,27 @@ impl eframe::App for PipelineWatcher {
             });
             ui.separator();
 
-            egui::CollapsingHeader::new("Подключение к GitLab")
+            egui::CollapsingHeader::new("GitLab Connection")
                 .default_open(!self.config.is_ready())
                 .show(ui, |ui| {
                     egui::Grid::new("settings")
                         .num_columns(2)
                         .spacing([12.0, 8.0])
                         .show(ui, |ui| {
-                            ui.label("Адрес GitLab");
+                            ui.label("GitLab URL");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.config.base_url)
                                     .hint_text("https://gitlab.example.com"),
                             );
                             ui.end_row();
-                            ui.label("Токен API");
+                            ui.label("API Token");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.token_input)
                                     .password(true)
                                     .hint_text("glpat-…"),
                             );
                             ui.end_row();
-                            ui.label("Опрос, секунд");
+                            ui.label("Refresh interval (seconds)");
                             ui.add(egui::Slider::new(&mut self.config.poll_seconds, 10..=300));
                             ui.end_row();
                         });
@@ -385,7 +386,7 @@ impl eframe::App for PipelineWatcher {
                     {
                         let previous = self.config.auto_start;
                         if ui
-                            .checkbox(&mut self.config.auto_start, "Запускать при входе в Windows")
+                            .checkbox(&mut self.config.auto_start, "Start with Windows")
                             .changed()
                         {
                             match set_auto_start(self.config.auto_start) {
@@ -403,7 +404,7 @@ impl eframe::App for PipelineWatcher {
                             }
                         }
                     }
-                    if ui.button("Сохранить и подключиться").clicked() {
+                    if ui.button("Save and connect").clicked() {
                         self.save_and_connect();
                     }
                 });
@@ -411,7 +412,7 @@ impl eframe::App for PipelineWatcher {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
                 if let Some(updated) = self.last_updated.and_then(|time| time.elapsed().ok()) {
-                    ui.label(format!("Обновлено {} сек. назад", updated.as_secs()));
+                    ui.label(format!("Updated {}s ago", updated.as_secs()));
                 }
             });
             if !self.error.is_empty() {
@@ -419,9 +420,9 @@ impl eframe::App for PipelineWatcher {
             }
 
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Running, "В процессе");
-                ui.selectable_value(&mut self.tab, Tab::Failed, "Ошибки");
-                ui.selectable_value(&mut self.tab, Tab::Success, "Успешные");
+                ui.selectable_value(&mut self.tab, Tab::Running, "Running");
+                ui.selectable_value(&mut self.tab, Tab::Failed, "Failed");
+                ui.selectable_value(&mut self.tab, Tab::Success, "Successful");
             });
             ui.separator();
 
@@ -438,9 +439,7 @@ impl eframe::App for PipelineWatcher {
             visible.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if visible.is_empty() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Пайплайнов в этой категории пока нет")
-                    });
+                    ui.centered_and_justified(|ui| ui.label("No pipelines in this category"));
                 }
                 for pipeline in &visible {
                     let key = (pipeline.project_id, pipeline.id);
@@ -456,15 +455,14 @@ impl eframe::App for PipelineWatcher {
                         });
                         ui.horizontal(|ui| {
                             ui.label(format!(
-                                "Ветка: {}",
+                                "Branch: {}",
                                 if pipeline.branch.is_empty() {
                                     "—"
                                 } else {
                                     &pipeline.branch
                                 }
                             ));
-                            if !pipeline.url.is_empty() && ui.link("Открыть в GitLab").clicked()
-                            {
+                            if !pipeline.url.is_empty() && ui.link("Open in GitLab").clicked() {
                                 ui.ctx().open_url(egui::OpenUrl::new_tab(&pipeline.url));
                             }
                         });
@@ -474,9 +472,9 @@ impl eframe::App for PipelineWatcher {
                         if !is_active {
                             if ui
                                 .small_button(if is_expanded {
-                                    "Скрыть этапы"
+                                    "Hide stages"
                                 } else {
-                                    "Показать этапы"
+                                    "Show stages"
                                 })
                                 .clicked()
                             {
@@ -497,14 +495,14 @@ impl eframe::App for PipelineWatcher {
                                 if loading {
                                     ui.horizontal(|ui| {
                                         ui.spinner();
-                                        ui.label("Обновляю стадии и задачи…");
+                                        ui.label("Refreshing stages and jobs…");
                                     });
                                 }
                                 if let Some(error) = self.job_errors.get(&key) {
                                     ui.colored_label(egui::Color32::LIGHT_RED, error);
                                 }
                                 if jobs.is_empty() {
-                                    ui.label("В этом пайплайне нет задач.");
+                                    ui.label("This pipeline has no jobs.");
                                 } else {
                                     let mut stages: Vec<(&str, Vec<&PipelineJob>)> = Vec::new();
                                     for job in jobs {
@@ -548,7 +546,7 @@ impl eframe::App for PipelineWatcher {
                                                     ui.label(text);
                                                 }
                                                 if !job.url.is_empty()
-                                                    && ui.link("Открыть задачу").clicked()
+                                                    && ui.link("Open job").clicked()
                                                 {
                                                     ui.ctx()
                                                         .open_url(egui::OpenUrl::new_tab(&job.url));
@@ -560,12 +558,12 @@ impl eframe::App for PipelineWatcher {
                             } else if loading {
                                 ui.horizontal(|ui| {
                                     ui.spinner();
-                                    ui.label("Загружаю стадии и задачи…");
+                                    ui.label("Loading stages and jobs…");
                                 });
                             } else if let Some(error) = self.job_errors.get(&key).cloned() {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(egui::Color32::LIGHT_RED, error);
-                                    if ui.small_button("Повторить").clicked() {
+                                    if ui.small_button("Retry").clicked() {
                                         self.request_jobs(key.0, key.1);
                                     }
                                 });
@@ -608,19 +606,19 @@ fn load_token() -> Option<String> {
 
 fn status_label(status: &str) -> &'static str {
     match status {
-        "created" => "Создан",
-        "waiting_for_resource" => "Ожидает ресурс",
-        "preparing" => "Подготовка",
-        "pending" => "В очереди",
-        "running" => "Выполняется",
-        "scheduled" => "Запланирован",
-        "canceling" => "Отменяется",
-        "failed" => "Ошибка",
-        "success" => "Успешно",
-        "canceled" => "Отменён",
-        "skipped" => "Пропущен",
-        "manual" => "Ожидает запуска",
-        _ => "Неизвестно",
+        "created" => "Created",
+        "waiting_for_resource" => "Waiting for resource",
+        "preparing" => "Preparing",
+        "pending" => "Pending",
+        "running" => "Running",
+        "scheduled" => "Scheduled",
+        "canceling" => "Canceling",
+        "failed" => "Failed",
+        "success" => "Success",
+        "canceled" => "Canceled",
+        "skipped" => "Skipped",
+        "manual" => "Manual",
+        _ => "Unknown",
     }
 }
 
@@ -640,7 +638,7 @@ fn set_auto_start(enabled: bool) -> Result<(), String> {
         && !Command::new("reg.exe")
             .args(["query", KEY, "/v", VALUE])
             .output()
-            .map_err(|error| format!("Не удалось проверить автозапуск: {error}"))?
+            .map_err(|error| format!("Could not check startup settings: {error}"))?
             .status
             .success()
     {
@@ -650,7 +648,7 @@ fn set_auto_start(enabled: bool) -> Result<(), String> {
     let mut command = Command::new("reg.exe");
     if enabled {
         let path = std::env::current_exe()
-            .map_err(|error| format!("Не удалось определить путь приложения: {error}"))?;
+            .map_err(|error| format!("Could not determine the application path: {error}"))?;
         command
             .args(["add", KEY, "/v", VALUE, "/t", "REG_SZ", "/d"])
             .arg(format!("\"{}\"", path.display()))
@@ -660,20 +658,20 @@ fn set_auto_start(enabled: bool) -> Result<(), String> {
     }
     let output = command
         .output()
-        .map_err(|error| format!("Не удалось изменить автозапуск: {error}"))?;
+        .map_err(|error| format!("Could not change startup settings: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
         Err(format!(
-            "Не удалось изменить автозапуск Windows (код {})",
+            "Could not change Windows startup settings (exit code {})",
             output.status
         ))
     }
 }
 
 pub fn notify_started(project: &str, path: &str, branch: &str, id: i64) {
-    let title = format!("{project}: запущен пайплайн #{id}");
-    let body = format!("{path} · ветка {branch}");
+    let title = format!("{project}: pipeline #{id} started");
+    let body = format!("{path} · branch {branch}");
     #[cfg(windows)]
     {
         let _ = winrt_notification::Toast::new(winrt_notification::Toast::POWERSHELL_APP_ID)
@@ -692,12 +690,12 @@ pub fn notify_started(project: &str, path: &str, branch: &str, id: i64) {
 
 pub fn notify_finished(project: &str, path: &str, branch: &str, id: i64, status: &str) {
     let (state, icon) = if status == "success" {
-        ("успешно завершён", "✅")
+        ("succeeded", "✅")
     } else {
-        ("завершился с ошибкой", "❌")
+        ("failed", "❌")
     };
-    let title = format!("{icon} {project}: пайплайн #{id} {state}");
-    let body = format!("{path} · ветка {branch}");
+    let title = format!("{icon} {project}: pipeline #{id} {state}");
+    let body = format!("{path} · branch {branch}");
     #[cfg(windows)]
     {
         let _ = winrt_notification::Toast::new(winrt_notification::Toast::POWERSHELL_APP_ID)
@@ -759,7 +757,7 @@ fn tray_icon(count: usize) -> Icon {
         } else {
             vec![b'0' + count as u8]
         };
-        for y in 0..8 {
+        for y in 8..16 {
             for x in 8..16 {
                 pixel(x, y, [194, 42, 54, 255]);
             }
@@ -783,17 +781,17 @@ fn tray_icon(count: usize) -> Icon {
                 for (row, bits) in glyphs[(character - b'0') as usize].iter().enumerate() {
                     for column in 0..3 {
                         if bits & (1 << (2 - column)) != 0 {
-                            pixel(cursor + column, 1 + row, [255, 255, 255, 255]);
+                            pixel(cursor + column, 9 + row, [255, 255, 255, 255]);
                         }
                     }
                 }
                 cursor += 4;
             } else {
                 for x in cursor..cursor + 3 {
-                    pixel(x, 3, [255, 255, 255, 255]);
+                    pixel(x, 11, [255, 255, 255, 255]);
                 }
-                pixel(cursor + 1, 2, [255, 255, 255, 255]);
-                pixel(cursor + 1, 4, [255, 255, 255, 255]);
+                pixel(cursor + 1, 10, [255, 255, 255, 255]);
+                pixel(cursor + 1, 12, [255, 255, 255, 255]);
                 cursor += 3;
             }
         }

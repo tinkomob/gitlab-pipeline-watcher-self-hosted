@@ -12,7 +12,7 @@ Enter the GitLab base URL (for example `https://gitlab.example.com`) and a perso
 
 The app polls all projects visible to that token and the latest 100 pipelines per project. It checks projects concurrently (up to eight requests at a time), shows active, failed, and successful pipelines, and opens GitLab links in the default browser. Stages and jobs load automatically for active pipelines; older completed pipelines load them when expanded. A `.local` DNS label is removed from the configured GitLab host and returned links. System notifications are sent when a new pipeline starts and when it succeeds or fails. Closing the window hides it to the tray; use the tray menu to open it or exit.
 
-On Windows, enable **Запускать при входе в Windows** in the connection settings to start the app for the current user at sign-in.
+On Windows, enable **Start with Windows** in the connection settings to start the app for the current user at sign-in.
 
 Temporary API and network errors trigger automatic retries with exponential backoff, up to two minutes. Per-project API errors are shown in the status area while polling continues.
 

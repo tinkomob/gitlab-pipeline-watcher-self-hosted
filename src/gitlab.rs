@@ -49,7 +49,7 @@ pub fn start(
             .build();
         let Ok(runtime) = runtime else {
             let _ = tx.send(WorkerUpdate::Snapshot(PollResult::error(
-                "Не удалось запустить фоновую задачу",
+                "Could not start the background worker",
             )));
             return;
         };
@@ -72,7 +72,7 @@ async fn run(
     loop {
         if !current_config.is_ready() {
             let _ = tx.send(WorkerUpdate::Snapshot(PollResult::error(
-                "Укажите адрес GitLab и токен с правом read_api",
+                "Enter your GitLab URL and a token with read_api access",
             )));
             ctx.request_repaint();
             if config_rx.changed().await.is_err() {
@@ -95,9 +95,9 @@ async fn run(
             let delay = retry_seconds;
             retry_seconds = (retry_seconds * 2).min(120);
             if result.updated_at.is_none() {
-                result.status = format!("Нет подключения — повтор через {delay} сек.");
+                result.status = format!("Disconnected — retrying in {delay}s");
             } else {
-                result.status = format!("Есть ошибки API — повтор через {delay} сек.");
+                result.status = format!("API errors — retrying in {delay}s");
             }
             delay
         };
@@ -255,9 +255,9 @@ async fn poll(
     PollResult {
         pipelines,
         status: if errors.is_empty() {
-            "Подключено".into()
+            "Connected".into()
         } else {
-            format!("Подключено, ошибок проектов: {}", errors.len())
+            format!("Connected, project errors: {}", errors.len())
         },
         error: errors.into_iter().take(3).collect::<Vec<_>>().join("\n"),
         updated_at: Some(std::time::SystemTime::now()),
@@ -267,9 +267,9 @@ async fn poll(
 fn client_and_api(config: &Config) -> Result<(Client, String), String> {
     let normalized_url = without_local_host_label(config.base_url.trim().trim_end_matches('/'));
     let base = Url::parse(&normalized_url)
-        .map_err(|_| "Некорректный адрес GitLab. Используйте http:// или https://".to_owned())?;
+        .map_err(|_| "Invalid GitLab URL. Use http:// or https://".to_owned())?;
     if !matches!(base.scheme(), "http" | "https") {
-        return Err("Адрес GitLab должен начинаться с http:// или https://".into());
+        return Err("GitLab URL must start with http:// or https://".into());
     }
     if base.host().is_none()
         || !base.username().is_empty()
@@ -278,21 +278,21 @@ fn client_and_api(config: &Config) -> Result<(Client, String), String> {
         || base.fragment().is_some()
     {
         return Err(
-            "Укажите адрес GitLab без логина, пароля, query-параметров или фрагмента".into(),
+            "Enter a GitLab URL without credentials, query parameters, or a fragment".into(),
         );
     }
     let api_base = format!("{}/api/v4/", base.as_str().trim_end_matches('/'));
     let token = config
         .token
         .parse()
-        .map_err(|_| "Токен содержит недопустимые символы".to_owned())?;
+        .map_err(|_| "The token contains invalid characters".to_owned())?;
     let mut headers = header::HeaderMap::new();
     headers.insert("PRIVATE-TOKEN", token);
     let client = Client::builder()
         .default_headers(headers)
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|_| "Не удалось создать HTTP-клиент".to_owned())?;
+        .map_err(|_| "Could not create the HTTP client".to_owned())?;
     Ok((client, api_base))
 }
 
@@ -322,11 +322,11 @@ pub fn without_local_host_label(value: &str) -> String {
 
 fn request_error(error: reqwest::Error) -> String {
     if error.is_timeout() {
-        "Тайм-аут соединения с GitLab".into()
+        "GitLab connection timed out".into()
     } else if let Some(status) = error.status() {
-        format!("GitLab вернул HTTP {status}")
+        format!("GitLab returned HTTP {status}")
     } else {
-        "Сетевая ошибка при обращении к GitLab".into()
+        "Network error while contacting GitLab".into()
     }
 }
 
@@ -355,7 +355,7 @@ async fn get_projects(client: &Client, api_base: &str) -> Result<Vec<Project>, S
         let mut batch: Vec<Project> = response
             .json()
             .await
-            .map_err(|_| "GitLab прислал некорректный список проектов".to_owned())?;
+            .map_err(|_| "GitLab returned an invalid project list".to_owned())?;
         if batch.is_empty() {
             break;
         }
@@ -384,7 +384,7 @@ async fn get_pipelines(
     response
         .json()
         .await
-        .map_err(|_| "GitLab прислал некорректный список пайплайнов".to_owned())
+        .map_err(|_| "GitLab returned an invalid pipeline list".to_owned())
 }
 
 async fn get_pipeline_jobs(
@@ -415,7 +415,7 @@ async fn get_pipeline_jobs(
         let mut batch: Vec<ApiJob> = response
             .json()
             .await
-            .map_err(|_| "GitLab прислал некорректный список задач".to_owned())?;
+            .map_err(|_| "GitLab returned an invalid job list".to_owned())?;
         if batch.is_empty() {
             break;
         }
