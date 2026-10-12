@@ -169,6 +169,7 @@ impl PipelineWatcher {
         let _ = menu.append(&quit);
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
             .with_tooltip("Pipeline Watcher")
             .with_icon(tray_icon(0))
             .build()
