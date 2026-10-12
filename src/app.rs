@@ -4,8 +4,12 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
-    sync::mpsc,
-    time::SystemTime,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::{Instant, SystemTime},
 };
 
 use directories::ProjectDirs;
@@ -141,9 +145,9 @@ pub struct PipelineWatcher {
     last_updated: Option<SystemTime>,
     tab: Tab,
     tray: Option<TrayIcon>,
-    open_menu_id: tray_icon::menu::MenuId,
-    quit_menu_id: tray_icon::menu::MenuId,
-    quit: bool,
+    open_requested: Arc<AtomicBool>,
+    quit_requested: Arc<AtomicBool>,
+    restore_window_level_at: Option<Instant>,
     config_path: Option<PathBuf>,
     tray_count: Option<usize>,
 }
@@ -169,6 +173,34 @@ impl PipelineWatcher {
             .with_icon(tray_icon(0))
             .build()
             .ok();
+        let open_requested = Arc::new(AtomicBool::new(false));
+        let quit_requested = Arc::new(AtomicBool::new(false));
+        let open_menu_id = open.id().clone();
+        let quit_menu_id = quit.id().clone();
+        let menu_open = open_requested.clone();
+        let menu_quit = quit_requested.clone();
+        let menu_ctx = cc.egui_ctx.clone();
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            if event.id == open_menu_id {
+                menu_open.store(true, Ordering::SeqCst);
+                menu_ctx.request_repaint();
+            } else if event.id == quit_menu_id {
+                menu_quit.store(true, Ordering::SeqCst);
+                menu_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                menu_ctx.request_repaint();
+            }
+        }));
+        let tray_open = open_requested.clone();
+        let tray_ctx = cc.egui_ctx.clone();
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+            if matches!(
+                event,
+                TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }
+            ) {
+                tray_open.store(true, Ordering::SeqCst);
+                tray_ctx.request_repaint();
+            }
+        }));
 
         Self {
             config,
@@ -186,9 +218,9 @@ impl PipelineWatcher {
             last_updated: None,
             tab: Tab::Running,
             tray,
-            open_menu_id: open.id().clone(),
-            quit_menu_id: quit.id().clone(),
-            quit: false,
+            open_requested,
+            quit_requested,
+            restore_window_level_at: None,
             config_path,
             tray_count: None,
         }
@@ -235,23 +267,24 @@ impl PipelineWatcher {
     }
 
     fn handle_tray_events(&mut self, ctx: &egui::Context) {
-        for event in MenuEvent::receiver().try_iter() {
-            if event.id == self.open_menu_id {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            } else if event.id == self.quit_menu_id {
-                self.quit = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+        if self.open_requested.swap(false, Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.restore_window_level_at =
+                Some(Instant::now() + std::time::Duration::from_millis(300));
         }
-        for event in TrayIconEvent::receiver().try_iter() {
-            if matches!(
-                event,
-                TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }
-            ) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
+        if self
+            .restore_window_level_at
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::Normal,
+            ));
+            self.restore_window_level_at = None;
         }
     }
 
@@ -338,7 +371,9 @@ impl eframe::App for PipelineWatcher {
         self.handle_tray_events(&ctx);
         self.apply_results();
 
-        if ctx.input(|input| input.viewport().close_requested()) && !self.quit {
+        if ctx.input(|input| input.viewport().close_requested())
+            && !self.quit_requested.load(Ordering::SeqCst)
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
