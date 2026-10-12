@@ -715,7 +715,7 @@ pub fn notify_finished(project: &str, path: &str, branch: &str, id: i64, status:
 }
 
 fn tray_icon(count: usize) -> Icon {
-    const SIZE: usize = 32;
+    const SIZE: usize = 16;
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
     let mut pixel = |x: usize, y: usize, color: [u8; 4]| {
         let index = (y * SIZE + x) * 4;
@@ -723,67 +723,79 @@ fn tray_icon(count: usize) -> Icon {
     };
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let dx = x as i32 - 14;
-            let dy = y as i32 - 17;
-            if dx * dx + dy * dy <= 12 * 12 {
-                pixel(x, y, [35, 89, 174, 255]);
+            let dx = x as i32 - 7;
+            let dy = y as i32 - 8;
+            let distance = dx * dx + dy * dy;
+            if distance <= 49 {
+                pixel(
+                    x,
+                    y,
+                    if distance >= 37 {
+                        [255, 255, 255, 255]
+                    } else {
+                        [28, 117, 214, 255]
+                    },
+                );
             }
         }
     }
-    for y in 8..25 {
-        pixel(14, y, [255, 255, 255, 255]);
-    }
-    for x in 8..21 {
-        pixel(x, 8, [255, 255, 255, 255]);
-        pixel(x, 24, [255, 255, 255, 255]);
-    }
-    for y in 16..18 {
-        for x in 11..18 {
+    // A bold P stays legible at the 16 px size Windows uses in the tray.
+    for y in 4..13 {
+        for x in 3..5 {
             pixel(x, y, [255, 255, 255, 255]);
         }
     }
-
-    let badge = count.min(99);
-    let text = if badge > 9 {
-        vec![b'9', b'+']
-    } else {
-        vec![b'0' + badge as u8]
-    };
-    for y in 0..13 {
-        for x in 18..32 {
-            pixel(x, y, [194, 42, 54, 255]);
+    for y in 4..9 {
+        for x in 4..10 {
+            if y < 6 || y >= 7 || x >= 8 {
+                pixel(x, y, [255, 255, 255, 255]);
+            }
         }
     }
-    let glyphs: [[u8; 5]; 10] = [
-        [7, 5, 5, 5, 7],
-        [2, 6, 2, 2, 7],
-        [7, 1, 7, 4, 7],
-        [7, 1, 7, 1, 7],
-        [5, 5, 7, 1, 1],
-        [7, 4, 7, 1, 7],
-        [7, 4, 7, 5, 7],
-        [7, 1, 1, 1, 1],
-        [7, 5, 7, 5, 7],
-        [7, 5, 7, 1, 7],
-    ];
-    let width = if text.len() == 1 { 3 } else { 7 };
-    let mut cursor = 18 + (14 - width) / 2;
-    for character in text {
-        if character.is_ascii_digit() {
-            for (row, bits) in glyphs[(character - b'0') as usize].iter().enumerate() {
-                for column in 0..3 {
-                    if bits & (1 << (2 - column)) != 0 {
-                        pixel(cursor + column, 3 + row, [255, 255, 255, 255]);
+
+    if count > 0 {
+        let text = if count > 9 {
+            vec![b'9', b'+']
+        } else {
+            vec![b'0' + count as u8]
+        };
+        for y in 0..8 {
+            for x in 8..16 {
+                pixel(x, y, [194, 42, 54, 255]);
+            }
+        }
+        let glyphs: [[u8; 5]; 10] = [
+            [7, 5, 5, 5, 7],
+            [2, 6, 2, 2, 7],
+            [7, 1, 7, 4, 7],
+            [7, 1, 7, 1, 7],
+            [5, 5, 7, 1, 1],
+            [7, 4, 7, 1, 7],
+            [7, 4, 7, 5, 7],
+            [7, 1, 1, 1, 1],
+            [7, 5, 7, 5, 7],
+            [7, 5, 7, 1, 7],
+        ];
+        let width = if text.len() == 1 { 3 } else { 7 };
+        let mut cursor = 8 + (8 - width) / 2;
+        for character in text {
+            if character.is_ascii_digit() {
+                for (row, bits) in glyphs[(character - b'0') as usize].iter().enumerate() {
+                    for column in 0..3 {
+                        if bits & (1 << (2 - column)) != 0 {
+                            pixel(cursor + column, 1 + row, [255, 255, 255, 255]);
+                        }
                     }
                 }
+                cursor += 4;
+            } else {
+                for x in cursor..cursor + 3 {
+                    pixel(x, 3, [255, 255, 255, 255]);
+                }
+                pixel(cursor + 1, 2, [255, 255, 255, 255]);
+                pixel(cursor + 1, 4, [255, 255, 255, 255]);
+                cursor += 3;
             }
-            cursor += 4;
-        } else {
-            pixel(cursor + 1, 5, [255, 255, 255, 255]);
-            for y in 7..10 {
-                pixel(cursor + 1, y, [255, 255, 255, 255]);
-            }
-            cursor += 3;
         }
     }
     Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).expect("fixed-size tray icon")
