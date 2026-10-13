@@ -157,6 +157,8 @@ pub struct PipelineWatcher {
     last_updated: Option<SystemTime>,
     tab: Tab,
     tray: Option<TrayIcon>,
+    #[cfg(windows)]
+    hwnd: Option<usize>,
     open_requested: Arc<AtomicBool>,
     quit_requested: Arc<AtomicBool>,
     restore_window_level_at: Option<Instant>,
@@ -273,6 +275,8 @@ impl PipelineWatcher {
             last_updated: None,
             tab: Tab::Running,
             tray,
+            #[cfg(windows)]
+            hwnd,
             open_requested,
             quit_requested,
             restore_window_level_at: None,
@@ -404,7 +408,7 @@ impl PipelineWatcher {
         }
     }
 
-    fn update_tray(&mut self) {
+    fn update_tray(&mut self, _ctx: &egui::Context) {
         let active = self
             .pipelines
             .iter()
@@ -412,6 +416,10 @@ impl PipelineWatcher {
             .count();
         if self.tray_count != Some(active) {
             self.tray_count = Some(active);
+            #[cfg(windows)]
+            if let Some(hwnd) = self.hwnd {
+                set_taskbar_overlay(hwnd, active);
+            }
             if let Some(tray) = &self.tray {
                 let _ = tray.set_icon(Some(tray_icon(active)));
                 let _ = tray.set_tooltip(Some(&format!("Pipeline Watcher: {active} running")));
@@ -664,7 +672,7 @@ impl eframe::App for PipelineWatcher {
                 });
         }
 
-        self.update_tray();
+        self.update_tray(&ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
 }
@@ -761,19 +769,20 @@ fn set_auto_start(enabled: bool) -> Result<(), String> {
 #[cfg(windows)]
 pub fn prepare_windows_activation() -> bool {
     register_open_protocol();
-
-    if std::env::args()
-        .skip(1)
-        .any(|arg| arg == "pipeline-watcher://open")
-        && signal_running_instance()
-    {
-        return true;
-    }
-
     let name: Vec<u16> = OPEN_EVENT_NAME.encode_utf16().chain(Some(0)).collect();
     let event = unsafe {
         windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null(), 0, 0, name.as_ptr())
     };
+    if event.is_null() {
+        return false;
+    }
+    if unsafe { windows_sys::Win32::Foundation::GetLastError() }
+        == windows_sys::Win32::Foundation::ERROR_ALREADY_EXISTS
+    {
+        let _ = signal_running_instance();
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(event) };
+        return true;
+    }
     NOTIFICATION_OPEN_EVENT.store(event as isize, Ordering::SeqCst);
     false
 }
@@ -953,7 +962,78 @@ pub fn notify_finished(project: &str, path: &str, branch: &str, id: i64, status:
     }
 }
 
+#[cfg(windows)]
+fn set_taskbar_overlay(hwnd: usize, count: usize) {
+    use windows::{
+        Win32::{
+            System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize},
+            UI::{Shell::{ITaskbarList3, TaskbarList}, WindowsAndMessaging::HICON},
+        },
+    };
+
+    unsafe {
+        let initialized = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED).is_ok();
+        let Ok(taskbar) = CoCreateInstance::<_, ITaskbarList3>(
+            &TaskbarList,
+            None,
+            CLSCTX_INPROC_SERVER,
+        ) else {
+            if initialized { CoUninitialize(); }
+            return;
+        };
+        if taskbar.HrInit().is_err() {
+            if initialized { CoUninitialize(); }
+            return;
+        }
+        let icon = if count == 0 {
+            HICON::default()
+        } else {
+            let data = tray_icon_data(count);
+            let mut resource = Vec::with_capacity(22 + 40 + data.rgba.len() + 64);
+            resource.extend_from_slice(&[0, 0, 1, 0, 1, 0, 16, 16, 0, 0, 1, 0, 32, 0]);
+            resource.extend_from_slice(&((40 + data.rgba.len() + 64) as u32).to_le_bytes());
+            resource.extend_from_slice(&22u32.to_le_bytes());
+            resource.extend_from_slice(&40u32.to_le_bytes());
+            resource.extend_from_slice(&16i32.to_le_bytes());
+            resource.extend_from_slice(&32i32.to_le_bytes());
+            resource.extend_from_slice(&1u16.to_le_bytes());
+            resource.extend_from_slice(&32u16.to_le_bytes());
+            resource.extend_from_slice(&0u32.to_le_bytes());
+            resource.extend_from_slice(&(data.rgba.len() as u32).to_le_bytes());
+            resource.extend_from_slice(&[0; 16]);
+            for y in (0..16).rev() {
+                for x in 0..16 {
+                    let i = (y * 16 + x) * 4;
+                    resource.extend_from_slice(&[
+                        data.rgba[i + 2], data.rgba[i + 1], data.rgba[i], data.rgba[i + 3],
+                    ]);
+                }
+            }
+            resource.extend_from_slice(&[0; 64]);
+            let handle = windows_sys::Win32::UI::WindowsAndMessaging::CreateIconFromResourceEx(
+                resource.as_ptr(), resource.len() as u32, 1, 0x0003_0000, 16, 16, 0,
+            );
+            HICON(handle as isize)
+        };
+        let description: Vec<u16> = format!("{count} running pipelines").encode_utf16().chain(Some(0)).collect();
+        let _ = taskbar.SetOverlayIcon(
+            windows::Win32::Foundation::HWND(hwnd as isize),
+            icon,
+            windows::Win32::Foundation::PWSTR(description.as_ptr() as *mut u16),
+        );
+        if icon.0 != 0 {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyIcon(icon);
+        }
+        if initialized { CoUninitialize(); }
+    }
+}
+
 fn tray_icon(count: usize) -> Icon {
+    let icon = tray_icon_data(count);
+    Icon::from_rgba(icon.rgba, icon.width, icon.height).expect("fixed-size tray icon")
+}
+
+fn tray_icon_data(count: usize) -> egui::IconData {
     const SIZE: usize = 16;
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
     let mut pixel = |x: usize, y: usize, color: [u8; 4]| {
@@ -1037,5 +1117,9 @@ fn tray_icon(count: usize) -> Icon {
             }
         }
     }
-    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).expect("fixed-size tray icon")
+    egui::IconData {
+        rgba,
+        width: SIZE as u32,
+        height: SIZE as u32,
+    }
 }
